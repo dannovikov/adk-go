@@ -75,7 +75,7 @@ func toMapStructure(data any) (map[string]any, error) {
 	}
 
 	var result map[string]any
-	if err := json.Unmarshal(bytes, result); err != nil {
+	if err := json.Unmarshal(bytes, &result); err != nil {
 		return nil, err
 	}
 	return result, nil

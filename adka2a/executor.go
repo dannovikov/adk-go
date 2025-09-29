@@ -74,7 +74,7 @@ func (e *Executor) Execute(ctx context.Context, reqCtx a2asrv.RequestContext, qu
 	cong := runner.Config(*e.config)
 	r, err := runner.New(&cong)
 	if err != nil {
-		return fmt.Errorf("failed to create a runner: %w", r)
+		return fmt.Errorf("failed to create a runner: %w", err)
 	}
 
 	task := reqCtx.Task
@@ -89,7 +89,8 @@ func (e *Executor) Execute(ctx context.Context, reqCtx a2asrv.RequestContext, qu
 	invocationMeta := toInvocationMeta(e.config, reqCtx)
 
 	if err := e.prepareSession(ctx, invocationMeta); err != nil {
-		event := toTaskFailedUpdateEvent(task, fmt.Errorf("failed to prepare a session: %w", err))
+		meta := invocationMeta.eventMeta
+		event := toTaskFailedUpdateEvent(task, fmt.Errorf("failed to prepare a session: %w", err), meta)
 		if err := queue.Write(ctx, event); err != nil {
 			return err
 		}

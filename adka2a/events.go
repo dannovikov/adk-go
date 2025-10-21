@@ -40,7 +40,7 @@ func NewRemoteAgentEvent(ctx agent.InvocationContext) *session.Event {
 
 // EventToMessage converts the provided session event to A2A message.
 func EventToMessage(event *session.Event) (*a2a.Message, error) {
-	if event == nil || event.Content == nil {
+	if event == nil {
 		return nil, nil
 	}
 

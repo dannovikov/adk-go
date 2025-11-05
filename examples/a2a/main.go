@@ -40,6 +40,7 @@ import (
 	"google.golang.org/genai"
 )
 
+// newWeatherAgent creates a simple LLM-agent as in the quickstart example.
 func newWeatherAgent(ctx context.Context) agent.Agent {
 	model, err := gemini.NewModel(ctx, "gemini-2.5-flash", &genai.ClientConfig{
 		APIKey: os.Getenv("GOOGLE_API_KEY"),
@@ -61,6 +62,7 @@ func newWeatherAgent(ctx context.Context) agent.Agent {
 	return agent
 }
 
+// startWeatherAgentServer starts an HTTP server which exposes a weather agent using A2A (Agent-To-Agent) protocol.
 func startWeatherAgentServer(addressChan chan string) {
 	ctx := context.Background()
 	agent := newWeatherAgent(ctx)

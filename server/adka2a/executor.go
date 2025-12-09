@@ -126,7 +126,7 @@ func (e *Executor) process(ctx ExecutorContext, r *runner.Runner, processor *eve
 		if adkErr != nil {
 			event := processor.makeTaskFailedEvent(fmt.Errorf("agent run failed: %w", adkErr), nil)
 			if err := q.Write(ctx, event); err != nil {
-				return fmt.Errorf("error event write failed: %w, %w", err, adkErr)
+				return fmt.Errorf("agent run failure event write failed: %w, %w", err, adkErr)
 			}
 			return nil
 		}
@@ -139,7 +139,7 @@ func (e *Executor) process(ctx ExecutorContext, r *runner.Runner, processor *eve
 		if pErr != nil {
 			event := processor.makeTaskFailedEvent(fmt.Errorf("processor failed: %w", pErr), adkEvent)
 			if err := q.Write(ctx, event); err != nil {
-				return fmt.Errorf("error event write failed: %w, %w", err, pErr)
+				return fmt.Errorf("processor failure event write failed: %w, %w", err, pErr)
 			}
 			return nil
 		}

@@ -73,6 +73,27 @@ func TestToSessionEvent(t *testing.T) {
 			},
 		},
 		{
+			name: "nil values",
+			input: &a2a.Message{
+				Parts:     []a2a.Part{a2a.TextPart{Text: "foo"}},
+				TaskID:    taskID,
+				ContextID: contextID,
+				Metadata: map[string]any{
+					metadataGroundingKey:  nil,
+					metadataUsageKey:      nil,
+					metadataCustomMetaKey: nil,
+				},
+			},
+			want: &session.Event{
+				LLMResponse: model.LLMResponse{
+					Content:        genai.NewContentFromParts([]*genai.Part{{Text: "foo"}}, genai.RoleModel),
+					CustomMetadata: map[string]any{customMetaTaskIDKey: string(taskID), customMetaContextIDKey: contextID},
+				},
+				Author: agentName,
+				Branch: branch,
+			},
+		},
+		{
 			name: "message with no parts",
 			input: &a2a.Message{
 				TaskID:    taskID,

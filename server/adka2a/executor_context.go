@@ -18,20 +18,28 @@ import (
 	"context"
 
 	"github.com/a2aproject/a2a-go/a2asrv"
-
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/session"
 )
 
+// ExecutorContext provides read-only information about the context of an A2A agent execution.
+// An execution starts with a user message and ends with a task in a terminal or input-required state.
 type ExecutorContext interface {
 	context.Context
 
+	// SessionID is ID of the session. It is passed as contextID in A2A request.
 	SessionID() string
+	// UserID is ID of the user who made the request. The information is either extracted from [a2asrv.CallContext]
+	// or derived from session ID for unauthenticated requests.
 	UserID() string
+	// AgentName is the name of the root agent.
 	AgentName() string
+	// ReadonlyState provides a view of the current session state.
 	ReadonlyState() session.ReadonlyState
+	// UserContent is a converted A2A message which is passed to runner.Run.
 	UserContent() *genai.Content
+	// RequestContext containts information about the original A2A Request, the current task and related tasks.
 	RequestContext() *a2asrv.RequestContext
 }
 
@@ -41,8 +49,6 @@ type executorContext struct {
 	session     session.ReadonlyState
 	userContent *genai.Content
 }
-
-var _ ExecutorContext = (*executorContext)(nil)
 
 func newExecutorContext(ctx context.Context, meta invocationMeta, session session.ReadonlyState, userContent *genai.Content) ExecutorContext {
 	return &executorContext{

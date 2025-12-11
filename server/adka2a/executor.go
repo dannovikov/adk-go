@@ -30,7 +30,7 @@ import (
 // AfterEventCallback is the callback which will be called after an ADK event is converted to an A2A event.
 type AfterEventCallback func(ctx ExecutorContext, event *session.Event, processed *a2a.TaskArtifactUpdateEvent) error
 
-// ExecutorConfig allows to configure Executor b.
+// ExecutorConfig allows to configure Executor.
 type ExecutorConfig struct {
 	// RunnerConfig is the configuration which will be used for [runner.New] during A2A Execute invocation.
 	RunnerConfig runner.Config
@@ -45,8 +45,8 @@ type ExecutorConfig struct {
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
 
-// Executor invokes an ADK agent and translates [session.Event]s to [a2a.Event]s according to the following rules:
-//   - If the input doesn't reference any a2a.Task, produce a TaskStatusUpdateEvent with TaskStateSubmitted.
+// Executor invokes an ADK agent and translates [session.Event]-s to [a2a.Event]-s according to the following rules:
+//   - If the input doesn't reference any a2a.Task, produce a Task with TaskStateSubmitted state.
 //   - Right before runner.Runner invocation, produce TaskStatusUpdateEvent with TaskStateWorking.
 //   - For every session.Event produce a TaskArtifactUpdateEvent{Append=true} with transformed parts.
 //   - After the last session.Event is processed produce an empty TaskArtifactUpdateEvent{Append=true} with LastChunk=true,

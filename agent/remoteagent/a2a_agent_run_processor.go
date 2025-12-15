@@ -19,13 +19,13 @@ import (
 	"slices"
 
 	"github.com/a2aproject/a2a-go/a2a"
+	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
 	icontext "google.golang.org/adk/internal/context"
 	"google.golang.org/adk/internal/converters"
 	"google.golang.org/adk/server/adka2a"
 	"google.golang.org/adk/session"
-	"google.golang.org/genai"
 )
 
 type a2aAgentRunProcessor struct {
@@ -43,9 +43,13 @@ func newRunProcessor(config A2AConfig, request *a2a.MessageSendParams) *a2aAgent
 	return &a2aAgentRunProcessor{config: config, request: request}
 }
 
+// aggregatePartial stores contents of partial events to emit them with the terminal event.
+// It can modify the original event or return a new event to emit before the provided event.
 func (p *a2aAgentRunProcessor) aggregatePartial(ctx agent.InvocationContext, event *session.Event) *session.Event {
-	p.handleLongRunningTools(ctx, event)
+	// Make sure long-running tool responses are stored in the SessionStore.
+	p.handleLongRunningTools(event)
 
+	// Partial events are not stored in SessionStore, so we need to aggregate contents and emit them with the terminal event.
 	if event.Partial {
 		for _, part := range event.Content.Parts {
 			if part.Thought {
@@ -70,10 +74,13 @@ func (p *a2aAgentRunProcessor) aggregatePartial(ctx agent.InvocationContext, eve
 		return nil
 	}
 	content := genai.NewContentFromParts(parts, genai.RoleModel)
-	if event.Content == nil { // only include aggregated partial responses into a non-partial event if it would be empty otherwise
+
+	// Use the terminal event to emit aggregated content if it would be empty otherwise.
+	if event.Content == nil {
 		event.Content = content
 		return nil
 	}
+
 	aggregatedEvent := adka2a.NewRemoteAgentEvent(ctx)
 	aggregatedEvent.Content = content
 	p.updateCustomMetadata(aggregatedEvent, nil)
@@ -81,7 +88,9 @@ func (p *a2aAgentRunProcessor) aggregatePartial(ctx agent.InvocationContext, eve
 	return aggregatedEvent
 }
 
-func (p *a2aAgentRunProcessor) handleLongRunningTools(ctx agent.InvocationContext, event *session.Event) {
+// handleLongRunningTools makes sure long-running tool calls and responses are not marked as Partial, as this
+// would prevent them from being stored in the SessionStore.
+func (p *a2aAgentRunProcessor) handleLongRunningTools(event *session.Event) {
 	if !event.Partial || event.Content == nil {
 		return
 	}
@@ -98,7 +107,7 @@ func (p *a2aAgentRunProcessor) handleLongRunningTools(ctx agent.InvocationContex
 	}
 }
 
-// Converts A2A client SendStreamingMessage result to a session event. Returns nil if nothing should be emitted.
+// convertToSessionEvent converts A2A client SendStreamingMessage result to a session event. Returns nil if nothing should be emitted.
 func (p *a2aAgentRunProcessor) convertToSessionEvent(ctx agent.InvocationContext, a2aEvent a2a.Event, err error) (*session.Event, error) {
 	if err != nil {
 		event := toErrorEvent(ctx, err)

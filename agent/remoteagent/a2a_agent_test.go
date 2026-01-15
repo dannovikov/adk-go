@@ -89,6 +89,34 @@ func newInvocationContext(t *testing.T, events []*session.Event) agent.Invocatio
 	return ic
 }
 
+func newInvocationContextWithStreamingMode(t *testing.T, events []*session.Event, noStreaming bool) agent.InvocationContext {
+	t.Helper()
+	ctx := t.Context()
+	service := session.InMemoryService()
+	resp, err := service.Create(ctx, &session.CreateRequest{AppName: t.Name(), UserID: "test"})
+	if err != nil {
+		t.Fatalf("sessionService.Create() error = %v", err)
+	}
+	for _, event := range events {
+		if err := service.AppendEvent(ctx, resp.Session, event); err != nil {
+			t.Fatalf("sessionService.AppendEvent() error = %v", err)
+		}
+	}
+
+	streamingMode := agent.StreamingModeSSE
+	if noStreaming {
+		streamingMode = agent.StreamingModeNone
+	}
+
+	ic := icontext.NewInvocationContext(ctx, icontext.InvocationContextParams{
+		Session: resp.Session,
+		RunConfig: &agent.RunConfig{
+			StreamingMode: streamingMode,
+		},
+	})
+	return ic
+}
+
 func runAndCollect(ic agent.InvocationContext, agnt agent.Agent) ([]*session.Event, error) {
 	var collected []*session.Event
 	for ev, err := range agnt.Run(ic) {
@@ -183,6 +211,7 @@ func TestRemoteAgent_ADK2ADK(t *testing.T) {
 		wantResponses []model.LLMResponse
 		wantEscalate  bool
 		wantTransfer  string
+		noStreaming   bool
 	}{
 		{
 			name: "text streaming",
@@ -198,6 +227,20 @@ func TestRemoteAgent_ADK2ADK(t *testing.T) {
 					TurnComplete: true,
 				},
 			},
+		},
+		{
+			name: "text streaming - no streaming mode",
+			remoteEvents: []*session.Event{
+				{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("hello ", genai.RoleModel)}},
+				{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("world", genai.RoleModel)}},
+			},
+			wantResponses: []model.LLMResponse{
+				{
+					Content:      genai.NewContentFromText("hello world", genai.RoleModel),
+					TurnComplete: true,
+				},
+			},
+			noStreaming: true,
 		},
 		{
 			name: "code execution",
@@ -340,7 +383,7 @@ func TestRemoteAgent_ADK2ADK(t *testing.T) {
 			executor := newADKEventReplay(t, tc.remoteEvents)
 			remoteAgent := newA2ARemoteAgent(t, "a2a", startA2AServer(executor))
 
-			ictx := newInvocationContext(t, []*session.Event{newUserHello()})
+			ictx := newInvocationContextWithStreamingMode(t, []*session.Event{newUserHello()}, tc.noStreaming)
 			gotEvents, err := runAndCollect(ictx, remoteAgent)
 			if err != nil {
 				t.Fatalf("agent.Run() error = %v", err)

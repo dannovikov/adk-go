@@ -98,6 +98,9 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 			return fmt.Errorf("before execute: %w", err)
 		}
 	}
+	if err := validateInputRequiredResumption(reqCtx, content); err != nil {
+		return fmt.Errorf("task resumption validation failed: %w", err)
+	}
 
 	if reqCtx.StoredTask == nil {
 		event := a2a.NewSubmittedTask(reqCtx, msg)

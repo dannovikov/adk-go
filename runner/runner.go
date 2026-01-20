@@ -34,6 +34,7 @@ import (
 	imemory "google.golang.org/adk/internal/memory"
 	"google.golang.org/adk/internal/plugininternal"
 	"google.golang.org/adk/internal/sessioninternal"
+	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/memory"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/plugin"
@@ -288,11 +289,17 @@ func (r *Runner) appendMessageToSession(ctx agent.InvocationContext, storedSessi
 // findAgentToRun returns the agent that should handle the next request based on
 // session history.
 func (r *Runner) findAgentToRun(session session.Session) (agent.Agent, error) {
+	if event := handleUserFunctionCallResponse(session.Events()); event != nil {
+		subAgent := findAgent(r.rootAgent, event.Author)
+		if subAgent != nil {
+			return subAgent, nil
+		}
+		log.Printf("Function call from an unknown agent: %s, event id: %s", event.Author, event.ID)
+	}
+
 	events := session.Events()
 	for i := events.Len() - 1; i >= 0; i-- {
 		event := events.At(i)
-
-		// TODO: findMatchingFunctionCall.
 
 		if event.Author == "user" {
 			continue
@@ -312,6 +319,35 @@ func (r *Runner) findAgentToRun(session session.Session) (agent.Agent, error) {
 
 	// Falls back to root agent if no suitable agents are found in the session.
 	return r.rootAgent, nil
+}
+
+// handleUserFunctionCallResponse finds the function call event that matches the function response id
+// delivered by the user in the latest event.
+func handleUserFunctionCallResponse(events session.Events) *session.Event {
+	if events.Len() == 0 {
+		return nil
+	}
+
+	lastEvent := events.At(events.Len() - 1)
+	if lastEvent.Author != "user" {
+		return nil
+	}
+
+	functionResponses := utils.FunctionResponses(lastEvent.Content)
+	if len(functionResponses) == 0 {
+		return nil
+	}
+
+	callID := functionResponses[0].ID
+	for i := events.Len() - 2; i >= 0; i-- {
+		event := events.At(i)
+		for _, part := range utils.FunctionCalls(event.Content) {
+			if part.ID == callID {
+				return event
+			}
+		}
+	}
+	return nil
 }
 
 // checks if the agent and its parent chain allow transfer up the tree.

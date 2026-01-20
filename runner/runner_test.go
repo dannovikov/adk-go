@@ -27,6 +27,7 @@ import (
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/artifact"
+	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
 )
 
@@ -79,6 +80,46 @@ func TestRunner_findAgentToRun(t *testing.T) {
 			}),
 			rootAgent: agentTree.root,
 			wantAgent: agentTree.root,
+		},
+		{
+			name: "last event from user with function response",
+			session: createSession(t, t.Context(), appName, userID, sessionID, []*session.Event{
+				{
+					Author: agentTree.noTransferAgent.Name(),
+					LLMResponse: model.LLMResponse{
+						Content: &genai.Content{
+							Parts: []*genai.Part{
+								{
+									FunctionCall: &genai.FunctionCall{
+										Name: "fn_name",
+										ID:   "fn_id",
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Author: agentTree.root.Name(),
+				},
+				{
+					Author: "user",
+					LLMResponse: model.LLMResponse{
+						Content: &genai.Content{
+							Parts: []*genai.Part{
+								{
+									FunctionResponse: &genai.FunctionResponse{
+										Name: "fn_name",
+										ID:   "fn_id",
+									},
+								},
+							},
+						},
+					},
+				},
+			}),
+			rootAgent: agentTree.root,
+			wantAgent: agentTree.noTransferAgent,
 		},
 	}
 

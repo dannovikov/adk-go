@@ -28,6 +28,8 @@ import (
 type inputRequiredProcessor struct {
 	reqCtx *a2asrv.RequestContext
 	event  *a2a.TaskStatusUpdateEvent
+	// handles possible duplication in partial and non-partial events
+	addedParts []*genai.Part
 }
 
 func newInputRequiredProcessor(reqCtx *a2asrv.RequestContext) *inputRequiredProcessor {
@@ -40,18 +42,31 @@ func (p *inputRequiredProcessor) process(event *session.Event) error {
 		return nil
 	}
 
-	var inputRequiredParts []*genai.Part
 	var longRunningCallIDs []string
+	var inputRequiredParts []*genai.Part
 	for _, part := range resp.Content.Parts {
+		callID := ""
 		if part.FunctionCall != nil && slices.Contains(event.LongRunningToolIDs, part.FunctionCall.ID) {
-			inputRequiredParts = append(inputRequiredParts, part)
-			longRunningCallIDs = append(longRunningCallIDs, part.FunctionCall.ID)
-			continue
+			callID = part.FunctionCall.ID
 		}
 		if part.FunctionResponse != nil && p.isResponseToLongRunning(part.FunctionResponse.ID) {
-			inputRequiredParts = append(inputRequiredParts, part)
-			longRunningCallIDs = append(longRunningCallIDs, part.FunctionResponse.ID)
+			callID = part.FunctionResponse.ID
 		}
+		if callID == "" {
+			continue
+		}
+		added := slices.ContainsFunc(p.addedParts, func(p *genai.Part) bool {
+			if part.FunctionCall != nil && p.FunctionCall != nil && part.FunctionCall.ID == p.FunctionCall.ID {
+				return true
+			}
+			return part.FunctionResponse != nil && p.FunctionResponse != nil && part.FunctionResponse.ID == p.FunctionResponse.ID
+		})
+		if added {
+			continue
+		}
+		p.addedParts = append(p.addedParts, part)
+		inputRequiredParts = append(inputRequiredParts, part)
+		longRunningCallIDs = append(longRunningCallIDs, callID)
 	}
 
 	if len(inputRequiredParts) == 0 {
@@ -91,32 +106,38 @@ func (p *inputRequiredProcessor) isResponseToLongRunning(id string) bool {
 	return false
 }
 
-// validateInputRequiredResumption checks if the input message contains responses to all function calls
+// handleInputRequired checks if the input message contains responses to all function calls
 // that happened during the previous invocation and were recorded in the Task input-required state message.
-func validateInputRequiredResumption(reqCtx *a2asrv.RequestContext, content *genai.Content) error {
+// If a non-nill event is returned the invoking code needs to use the event as the result of the execution
+func handleInputRequired(reqCtx *a2asrv.RequestContext, content *genai.Content) (*a2a.TaskStatusUpdateEvent, error) {
 	if reqCtx.StoredTask == nil {
-		return nil
+		return nil, nil
 	}
 	task, statusMsg := reqCtx.StoredTask, reqCtx.StoredTask.Status.Message
 	if task.Status.State != a2a.TaskStateInputRequired || statusMsg == nil {
-		return nil
+		return nil, nil
 	}
 
 	taskParts, err := ToGenAIParts(statusMsg.Parts)
 	if err != nil {
-		return fmt.Errorf("failed to parse task status message: %w", err)
+		return nil, fmt.Errorf("failed to parse task status message: %w", err)
 	}
 
-	for _, p := range taskParts {
-		if p.FunctionCall == nil {
+	for _, statusPart := range taskParts {
+		if statusPart.FunctionCall == nil {
 			continue
 		}
 		hasMatchingResponse := slices.ContainsFunc(content.Parts, func(p *genai.Part) bool {
-			return p.FunctionResponse != nil && p.FunctionResponse.ID == p.FunctionCall.ID
+			return p.FunctionResponse != nil && p.FunctionResponse.ID == statusPart.FunctionCall.ID
 		})
 		if !hasMatchingResponse {
-			return fmt.Errorf("no input provided for function call ID %q", p.FunctionCall.ID)
+			errPart := a2a.TextPart{Text: fmt.Sprintf("no input provided for function call ID %q", statusPart.FunctionCall.ID)}
+			updatedParts := append(slices.Clone(statusMsg.Parts), errPart)
+			msg := a2a.NewMessageForTask(a2a.MessageRoleAgent, reqCtx.StoredTask, updatedParts...)
+			event := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateInputRequired, msg)
+			event.Final = true
+			return event, nil
 		}
 	}
-	return nil
+	return nil, nil
 }

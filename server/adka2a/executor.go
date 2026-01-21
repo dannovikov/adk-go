@@ -98,8 +98,12 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 			return fmt.Errorf("before execute: %w", err)
 		}
 	}
-	if err := validateInputRequiredResumption(reqCtx, content); err != nil {
-		return fmt.Errorf("task resumption validation failed: %w", err)
+
+	if event, err := handleInputRequired(reqCtx, content); event != nil || err != nil {
+		if err != nil {
+			return err
+		}
+		return queue.Write(ctx, event)
 	}
 
 	if reqCtx.StoredTask == nil {

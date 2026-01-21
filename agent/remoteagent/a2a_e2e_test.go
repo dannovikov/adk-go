@@ -16,7 +16,6 @@ package remoteagent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"iter"
 	"testing"
@@ -26,6 +25,8 @@ import (
 	"github.com/a2aproject/a2a-go/a2asrv"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"google.golang.org/genai"
+
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
 	"google.golang.org/adk/internal/converters"
@@ -36,7 +37,6 @@ import (
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
-	"google.golang.org/genai"
 )
 
 const (
@@ -54,13 +54,13 @@ const (
 type approvalStatus string
 
 var (
-	approvalStatusPending  = "pending"
-	approvalStatusApproved = "approved"
+	approvalStatusPending  approvalStatus = "pending"
+	approvalStatusApproved approvalStatus = "approved"
 )
 
 type approval struct {
-	Status   string `json:"status"`
-	TicketID string `json:"ticket_id"`
+	Status   approvalStatus `json:"status"`
+	TicketID string         `json:"ticket_id"`
 }
 
 /**
@@ -410,26 +410,4 @@ func pendingToApproved(t *testing.T, pendingResponse *genai.FunctionResponse) *g
 	}))
 	response.FunctionResponse.ID = pendingResponse.ID
 	return response
-}
-
-func print(a any) {
-	bytes, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(string(bytes))
-}
-
-func printNotPartial(t *a2a.Task) {
-	for i, a := range t.Artifacts {
-		parts := []a2a.Part{}
-		fmt.Print("----------------- artifact", i, " parts ", len(a.Parts), "\n")
-		for _, p := range a.Parts {
-			if b, _ := p.Meta()["adk_partial"].(bool); b {
-				continue
-			}
-			parts = append(parts, p)
-		}
-		print(parts)
-	}
 }

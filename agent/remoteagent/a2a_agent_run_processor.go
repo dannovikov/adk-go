@@ -35,7 +35,6 @@ type a2aAgentRunProcessor struct {
 	// partial event contents emitted before the terminal event
 	aggregatedText     string
 	aggregatedThoughts string
-	longRunningToolIDs []string
 }
 
 func newRunProcessor(config A2AConfig, request *a2a.MessageSendParams) *a2aAgentRunProcessor {

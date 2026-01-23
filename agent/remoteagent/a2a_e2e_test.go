@@ -16,7 +16,6 @@ package remoteagent
 
 import (
 	"context"
-	"fmt"
 	"iter"
 	"testing"
 

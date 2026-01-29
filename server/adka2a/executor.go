@@ -168,7 +168,7 @@ func (e *Executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, qu
 }
 
 // Processing failures should be delivered as Task failed events. An error is returned from this method if an event write fails.
-func (e *Executor) process(ctx *executorContext, r *runner.Runner, processor *eventProcessor, q eventqueue.Queue) error {
+func (e *Executor) process(ctx ExecutorContext, r *runner.Runner, processor *eventProcessor, q eventqueue.Queue) error {
 	meta := processor.meta
 	for adkEvent, adkErr := range r.Run(ctx, meta.userID, meta.sessionID, ctx.UserContent(), e.config.RunConfig) {
 		if adkErr != nil {

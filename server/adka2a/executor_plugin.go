@@ -17,11 +17,12 @@ package adka2a
 import (
 	"slices"
 
+	"google.golang.org/genai"
+
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/plugin"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
-	"google.golang.org/genai"
 )
 
 type executorPlugin struct {
@@ -35,10 +36,7 @@ func withExecutorPlugin(cfg runner.Config) (runner.Config, *executorPlugin, erro
 	if err != nil {
 		return cfg, nil, err
 	}
-	pluginCfg := cfg.PluginConfig
-	plugins := slices.Clone(pluginCfg.Plugins)
-	pluginCfg.Plugins = append(plugins, executorPlugin.plugin)
-	cfg.PluginConfig = pluginCfg
+	cfg.PluginConfig.Plugins = append(slices.Clone(cfg.PluginConfig.Plugins), executorPlugin.plugin)
 	return cfg, executorPlugin, nil
 }
 

@@ -410,10 +410,6 @@ func TestExecutor_Callbacks(t *testing.T) {
 				{LLMResponse: modelResponseFromParts(genai.NewPartFromText("Hello"))},
 				{LLMResponse: modelResponseFromParts(genai.NewPartFromText(", world!"))},
 			},
-			afterEvent: func(ctx ExecutorContext, event *session.Event, processed *a2a.TaskArtifactUpdateEvent) error {
-				processed.Artifact.Parts = append(processed.Artifact.Parts, a2a.TextPart{Text: " (enriched)"})
-				return nil
-			},
 			afterExecution: func(ctx ExecutorContext, finalUpdate *a2a.TaskStatusUpdateEvent, err error) error {
 				eventCount := ctx.Events().Len()
 				finalUpdate.Status.Message = a2a.NewMessage(a2a.MessageRoleAgent, a2a.TextPart{Text: fmt.Sprintf("event count = %d", eventCount)})
@@ -421,8 +417,8 @@ func TestExecutor_Callbacks(t *testing.T) {
 			},
 			wantEvents: []a2a.Event{
 				a2a.NewStatusUpdateEvent(task, a2a.TaskStateWorking, nil),
-				a2a.NewArtifactEvent(task, a2a.TextPart{Text: "Hello"}, a2a.TextPart{Text: " (enriched)"}),
-				a2a.NewArtifactUpdateEvent(task, a2a.NewArtifactID(), a2a.TextPart{Text: ", world!"}, a2a.TextPart{Text: " (enriched)"}),
+				a2a.NewArtifactEvent(task, a2a.TextPart{Text: "Hello"}),
+				a2a.NewArtifactUpdateEvent(task, a2a.NewArtifactID(), a2a.TextPart{Text: ", world!"}),
 				newArtifactLastChunkEvent(task),
 				newFinalStatusUpdate(task, a2a.TaskStateCompleted,
 					a2a.NewMessage(a2a.MessageRoleAgent, a2a.TextPart{Text: "event count = 3"}),

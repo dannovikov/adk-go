@@ -129,7 +129,6 @@ func (c *RuntimeAPIController) RunSSEHandler(rw http.ResponseWriter, req *http.R
 				ErrorMessage: err.Error(),
 			}
 
-			//Call flashEvent
 			errFlash := flashModelEvent(rc, rw, &errorEvent)
 			if errFlash != nil {
 				return errFlash

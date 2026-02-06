@@ -14,9 +14,15 @@
 
 package remoteagent
 
+//go:generate go test -httprecord=.*
+
 import (
 	"context"
+	"io"
 	"iter"
+	"net/http"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/a2a"
@@ -28,9 +34,13 @@ import (
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
+	"google.golang.org/adk/agent/workflowagents/sequentialagent"
 	"google.golang.org/adk/internal/converters"
+	"google.golang.org/adk/internal/httprr"
+	"google.golang.org/adk/internal/testutil"
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
+	"google.golang.org/adk/model/gemini"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/server/adka2a"
 	"google.golang.org/adk/session"
@@ -73,13 +83,7 @@ func TestA2AInputRequired(t *testing.T) {
 	defer server.Close()
 
 	// Client
-	ctx := t.Context()
-	client, err := a2aclient.NewFromEndpoints(ctx, []a2a.AgentInterface{
-		{URL: server.URL, Transport: a2a.TransportProtocolJSONRPC},
-	})
-	if err != nil {
-		t.Fatalf("a2aclient.NewFromCard() error = %v", err)
-	}
+	client := newA2AClient(t, server)
 
 	// Initial message triggers input required
 	taskContent := "Perform important task!"
@@ -104,6 +108,39 @@ func TestA2AInputRequired(t *testing.T) {
 	}
 
 	// Required input gets delivered
+
+	// Verify that error message is present
+	if len(task2.Status.Message.Parts) < 2 {
+		t.Fatalf("task2.Status.Message.Parts len = %d; want >= 2", len(task2.Status.Message.Parts))
+	}
+	// The last part should be the error message
+	lastPart := task2.Status.Message.Parts[len(task2.Status.Message.Parts)-1]
+	tp, ok := lastPart.(a2a.TextPart)
+	if !ok {
+		t.Fatalf("last part is not TextPart")
+	}
+	if !strings.Contains(tp.Text, "no input provided") {
+		t.Errorf("last part text = %q; want it to contain 'no input provided'", tp.Text)
+	}
+
+	// Another incomplete followup should not accumulate error messages
+	msg2a := a2a.NewMessageForTask(a2a.MessageRoleUser, task1, a2a.TextPart{Text: "Still debating?"})
+	task2a := mustSendMessage(t, client, msg2a)
+	if task2a.Status.State != a2a.TaskStateInputRequired {
+		t.Fatalf("client.SendMessage(IncompleteInput 2) result state = %q, want %q", task2a.Status.State, a2a.TaskStateInputRequired)
+	}
+
+	// Count validation errors in parts
+	validationErrors := 0
+	for _, p := range task2a.Status.Message.Parts {
+		if tp, ok := p.(a2a.TextPart); ok && strings.Contains(tp.Text, "no input provided") {
+			validationErrors++
+		}
+	}
+	if validationErrors != 1 {
+		t.Errorf("validationErrors count = %d; want 1", validationErrors)
+	}
+
 	toolCall, pendingResponse := findLongRunningCall(t, toGenaiParts(t, task2.Status.Message.Parts))
 	approvedResponse := pendingToApproved(t, pendingResponse)
 	msg3 := a2a.NewMessageForTask(a2a.MessageRoleUser, task2,
@@ -116,22 +153,24 @@ func TestA2AInputRequired(t *testing.T) {
 	}
 
 	// Verify the final task state
-	opts := []cmp.Option{cmpopts.EquateEmpty()}
+	opts := []cmp.Option{
+		cmpopts.EquateEmpty(),
+		cmpopts.IgnoreMapEntries(func(k string, v any) bool { return k == "id" }),
+		cmpopts.IgnoreFields(a2a.Message{}, "ID"),
+	}
 	if len(task3.Artifacts) != 2 {
 		t.Fatalf("len(task.Artifacts) = %d, want 2", len(task3.Artifacts))
 	}
 
 	gotHistory := task3.History
-	wantHistory := []*a2a.Message{msg1, msg2, task1.Status.Message, msg3, task2.Status.Message}
+	wantHistory := []*a2a.Message{msg1, msg2, task1.Status.Message, msg2a, task2a.Status.Message, msg3, task2a.Status.Message}
 	if diff := cmp.Diff(wantHistory, gotHistory, opts...); diff != "" {
 		t.Fatalf("unexpected history (+got,-want) diff:\n%s", diff)
 	}
 
-	gotFirstArtifactParts := task3.Artifacts[0].Parts
+	gotFirstArtifactParts := adka2a.WithoutPartialArtifacts(task3.Artifacts)[0].Parts
 	wantFirstAftifactParts := a2a.ContentParts{
 		a2a.TextPart{Text: modelTextRequiresApproval},
-		toA2AParts(t, []*genai.Part{{FunctionCall: toolCall}}, []string{toolCall.ID})[0],
-		toA2AParts(t, []*genai.Part{{FunctionResponse: pendingResponse}}, nil)[0],
 		a2a.TextPart{Text: modelTextWaitingForApproval},
 	}
 	if diff := cmp.Diff(wantFirstAftifactParts, gotFirstArtifactParts, opts...); diff != "" {
@@ -164,13 +203,7 @@ func TestA2AMultiHopInputRequired(t *testing.T) {
 	defer serverA.Close()
 
 	// Client for Server A
-	ctx := t.Context()
-	client, err := a2aclient.NewFromEndpoints(ctx, []a2a.AgentInterface{
-		{URL: serverA.URL, Transport: a2a.TransportProtocolJSONRPC},
-	})
-	if err != nil {
-		t.Fatalf("a2aclient.NewFromCard() error = %v", err)
-	}
+	client := newA2AClient(t, serverA)
 
 	// Initial message triggers input required
 	msg1 := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "Hello, perform important task!"})
@@ -215,18 +248,152 @@ func TestA2AMultiHopInputRequired(t *testing.T) {
 		genai.NewPartFromFunctionResponse(transferToolName, nil),
 		genai.NewPartFromText(modelTextRequiresApproval),
 		genai.NewPartFromText(modelTextWaitingForApproval),
-		{FunctionCall: &genai.FunctionCall{Name: toolCall.Name, ID: toolCall.ID}},
-		{FunctionResponse: pendingResponse},
 	}, []string{toolCall.ID})
 	if diff := cmp.Diff(wantFirstAftifactParts, gotFirstArtifactParts, opts...); diff != "" {
 		t.Fatalf("unexpected artifact parts (+got,-want) diff:\n%s", diff)
 	}
 
-	gotSecondArtifactParts := filterPartial(task3.Artifacts[1].Parts)
+	gotSecondArtifactParts := filterPartial(adka2a.WithoutPartialArtifacts(task3.Artifacts)[1].Parts)
 	wantSecondArtifactParts := []a2a.Part{a2a.TextPart{Text: modelTextTaskComplete}}
 	if diff := cmp.Diff(wantSecondArtifactParts, gotSecondArtifactParts, opts...); diff != "" {
 		t.Fatalf("unexpected artifact parts (+got,-want) diff:\n%s", diff)
 	}
+}
+
+func TestA2AFinalResponse(t *testing.T) {
+	testCases := []struct {
+		name        string
+		agentFn     func(*testing.T) agent.Agent
+		wantResult  a2a.ContentParts
+		wantPartial bool
+	}{
+		{
+			name: "streaming",
+			agentFn: func(t *testing.T) agent.Agent {
+				beep := newADKEventReplay(t, "beep", []*session.Event{
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("Hello,", genai.RoleModel), Partial: true}},
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText(" I am beep!", genai.RoleModel), Partial: true, TurnComplete: true}},
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("Hello, I am beep!", genai.RoleModel)}},
+				})
+				boop := newADKEventReplay(t, "boop", []*session.Event{
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("I am boop", genai.RoleModel), Partial: true}},
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText(". We are", genai.RoleModel), Partial: true}},
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("here to help!", genai.RoleModel), Partial: true, TurnComplete: true}},
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("I am boop. We are here to help!", genai.RoleModel)}},
+				})
+				return utils.Must(sequentialagent.New(sequentialagent.Config{
+					AgentConfig: agent.Config{Name: "root", SubAgents: []agent.Agent{beep, boop}},
+				}))
+			},
+			wantResult: a2a.ContentParts{
+				a2a.TextPart{Text: "Hello, I am beep!"},
+				a2a.TextPart{Text: "I am boop. We are here to help!"},
+			},
+			wantPartial: true,
+		},
+		{
+			name: "non-streaming",
+			agentFn: func(t *testing.T) agent.Agent {
+				beep := newADKEventReplay(t, "beep", []*session.Event{
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("Hello, I am beep!", genai.RoleModel)}},
+				})
+				boop := newADKEventReplay(t, "boop", []*session.Event{
+					{LLMResponse: model.LLMResponse{Content: genai.NewContentFromText("I am boop. We are here to help!", genai.RoleModel)}},
+				})
+				return utils.Must(sequentialagent.New(sequentialagent.Config{
+					AgentConfig: agent.Config{Name: "root", SubAgents: []agent.Agent{beep, boop}},
+				}))
+			},
+			wantResult: a2a.ContentParts{
+				a2a.TextPart{Text: "Hello, I am beep!"},
+				a2a.TextPart{Text: "I am boop. We are here to help!"},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := newAgentExecutor(tc.agentFn(t))
+			server := startA2AServer(executor)
+			defer server.Close()
+
+			client := newA2AClient(t, server)
+			msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "Perform important task!"})
+			task := mustSendMessage(t, client, msg)
+			if task.Status.State != a2a.TaskStateCompleted {
+				t.Fatalf("client.SendMessage(Initial) result state = %q, want %q", task.Status.State, a2a.TaskStateInputRequired)
+			}
+			nonPartialArtifacts := adka2a.WithoutPartialArtifacts(task.Artifacts)
+			if len(nonPartialArtifacts) != 1 {
+				t.Fatalf("len(artifacts) = %d, want 1", len(nonPartialArtifacts))
+			}
+
+			if diff := cmp.Diff(tc.wantResult, nonPartialArtifacts[0].Parts); diff != "" {
+				t.Fatalf("task wrong artifact parts (+got,-want) diff = %s", diff)
+			}
+
+			if !tc.wantPartial {
+				if len(task.Artifacts) != 1 {
+					t.Fatalf("len(artifacts) = %d, want 1", len(task.Artifacts))
+				}
+				return
+			}
+
+			if len(task.Artifacts) != 2 {
+				t.Fatalf("len(artifacts) = %d, want 2", len(nonPartialArtifacts))
+			}
+			var partialArtifact *a2a.Artifact
+			if adka2a.IsPartial(task.Artifacts[0].Metadata) {
+				partialArtifact = task.Artifacts[0]
+			} else {
+				partialArtifact = task.Artifacts[1]
+			}
+			wantPartialParts := a2a.ContentParts{a2a.DataPart{Data: map[string]any{}, Metadata: map[string]any{"adk_partial": true}}}
+			if diff := cmp.Diff(wantPartialParts, partialArtifact.Parts); diff != "" {
+				t.Fatalf("task wrong artifact parts (+got,-want) diff = %s", diff)
+			}
+		})
+	}
+}
+
+func TestA2ARemoteAgentStreamingGemini(t *testing.T) {
+	// Server B with replayable LLMAgent
+	llmModel := newGeminiModel(t, "gemini-2.5-flash")
+	modelAgent := utils.Must(llmagent.New(llmagent.Config{
+		Name:        "model-agent",
+		Model:       llmModel,
+		Instruction: "You are a helpful assistant.",
+	}))
+
+	executorB := newAgentExecutor(modelAgent)
+	serverB := startA2AServer(executorB)
+	defer serverB.Close()
+
+	// Server A with RemoteAgent
+	remoteAgent := newA2ARemoteAgent(t, "remote-agent", serverB)
+	executorA := newAgentExecutor(remoteAgent)
+	serverA := startA2AServer(executorA)
+	defer serverA.Close()
+
+	// Client
+	ctx := t.Context()
+	client := newA2AClient(t, serverA)
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "tell me about the capital of Poland"})
+	var taskID a2a.TaskID
+	for event, err := range client.SendStreamingMessage(t.Context(), &a2a.MessageSendParams{Message: msg}) {
+		if err != nil {
+			t.Fatalf("client.SendStreamingMessage() error = %v", err)
+		}
+		taskID = event.TaskInfo().TaskID
+	}
+	task, err := client.GetTask(ctx, &a2a.TaskQueryParams{ID: taskID})
+	if err != nil {
+		t.Fatalf("client.GetTask() error = %v", err)
+	}
+
+	if task.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("task state = %q, want %q", task.Status.State, a2a.TaskStateCompleted)
+	}
+	logJSON(t, task)
 }
 
 type llmStub struct {
@@ -395,6 +562,17 @@ func fromMap[T any](t *testing.T, m map[string]any) *T {
 	return result
 }
 
+func newA2AClient(t *testing.T, server *testA2AServer) *a2aclient.Client {
+	t.Helper()
+	result, err := a2aclient.NewFromEndpoints(t.Context(), []a2a.AgentInterface{
+		{URL: server.URL, Transport: a2a.TransportProtocolJSONRPC},
+	})
+	if err != nil {
+		t.Fatalf("a2aclient.NewFromEndpoints() error = %v", err)
+	}
+	return result
+}
+
 func pendingToApproved(t *testing.T, pendingResponse *genai.FunctionResponse) *genai.Part {
 	t.Helper()
 	pendingApproval := fromMap[approval](t, pendingResponse.Response)
@@ -404,4 +582,43 @@ func pendingToApproved(t *testing.T, pendingResponse *genai.FunctionResponse) *g
 	}))
 	response.FunctionResponse.ID = pendingResponse.ID
 	return response
+}
+
+func newGeminiTestClientConfig(t *testing.T, rrfile string) (http.RoundTripper, bool) {
+	t.Helper()
+	rr, err := testutil.NewGeminiTransport(rrfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure the transport is closed to flush data and release locks
+	if c, ok := rr.(io.Closer); ok {
+		t.Cleanup(func() {
+			if err := c.Close(); err != nil {
+				t.Errorf("failed to close transport: %v", err)
+			}
+		})
+	}
+
+	recording, _ := httprr.Recording(rrfile)
+	return rr, recording
+}
+
+func newGeminiModel(t *testing.T, modelName string) model.LLM {
+	apiKey := "fakeKey"
+	trace := filepath.Join("testdata", strings.ReplaceAll(t.Name()+".httprr", "/", "_"))
+	recording := false
+	transport, recording := newGeminiTestClientConfig(t, trace)
+	if recording { // if we are recording httprr trace, don't use the fakeKey.
+		apiKey = ""
+	}
+
+	model, err := gemini.NewModel(t.Context(), modelName, &genai.ClientConfig{
+		HTTPClient: &http.Client{Transport: transport},
+		APIKey:     apiKey,
+	})
+	if err != nil {
+		t.Fatalf("failed to create model: %v", err)
+	}
+	return model
 }

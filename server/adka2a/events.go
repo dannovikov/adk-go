@@ -108,6 +108,7 @@ func ToSessionEvent(ctx agent.InvocationContext, event a2a.Event) (*session.Even
 			return nil, nil
 		}
 		event, err := messageToEvent(ctx, v.Status.Message)
+		event.TurnComplete = false
 		if err != nil {
 			return nil, fmt.Errorf("custom metadata conversion failed: %w", err)
 		}
@@ -179,6 +180,7 @@ func messageToEvent(ctx agent.InvocationContext, msg *a2a.Message) (*session.Eve
 	if err := processA2AMeta(msg, event); err != nil {
 		return nil, fmt.Errorf("metadata processing failed: %w", err)
 	}
+	event.TurnComplete = true
 	return event, nil
 }
 
@@ -232,11 +234,10 @@ func taskToEvent(ctx agent.InvocationContext, task *a2a.Task) (*session.Event, e
 		longRunningToolIDs = append(longRunningToolIDs, lrtIDs...)
 	}
 
-	notTerminal := !task.Status.State.Terminal() && task.Status.State != a2a.TaskStateInputRequired
-	if len(parts) == 0 && notTerminal {
+	isTerminal := task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired
+	if len(parts) == 0 && !isTerminal {
 		return nil, nil
 	}
-
 	if len(parts) > 0 {
 		event.Content = genai.NewContentFromParts(parts, genai.RoleModel)
 	}
@@ -246,6 +247,7 @@ func taskToEvent(ctx agent.InvocationContext, task *a2a.Task) (*session.Event, e
 	if err := processA2AMeta(task, event); err != nil {
 		return nil, fmt.Errorf("metadata processing failed: %w", err)
 	}
+	event.TurnComplete = isTerminal
 	return event, nil
 }
 

@@ -46,6 +46,7 @@ func newRunProcessor(config A2AConfig, request *a2a.MessageSendParams) *a2aAgent
 func (p *a2aAgentRunProcessor) aggregatePartial(ctx agent.InvocationContext, a2aEvent a2a.Event, event *session.Event) *session.Event {
 	// ADK partial events should be aggregated by ADK and emitted as a non-partial artifact update.
 	// That's why we skip them regardless of the actual isPartial value.
+
 	if a2aEvent != nil && adka2a.IsPartialFlagSet(a2aEvent.Meta()) {
 		return nil
 	}

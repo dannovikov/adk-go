@@ -132,10 +132,14 @@ func newArtifactUpdate(task a2a.TaskInfoProvider, id a2a.ArtifactID, parts []a2a
 }
 
 func newPartialArtifactUpdate(task a2a.TaskInfoProvider, artifactID a2a.ArtifactID, parts []a2a.Part) *a2a.TaskArtifactUpdateEvent {
-	updatePartsMetadata(parts, map[string]any{metadataPartialKey: true})
 	ev := newArtifactUpdate(task, artifactID, parts)
-	ev.Artifact.Metadata = map[string]any{metadataPartialKey: true}
-	ev.Metadata = map[string]any{metadataPartialKey: true}
+	updatePartsMetadata(parts, map[string]any{metadataPartialKey: true})
+	if ev.Artifact.Metadata == nil {
+		ev.Artifact.Metadata = map[string]any{metadataPartialKey: true}
+	} else {
+		ev.Artifact.Metadata[metadataPartialKey] = true
+	}
+	ev.Metadata[metadataPartialKey] = true
 	ev.Append = false // discard partial events
 	return ev
 }

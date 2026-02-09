@@ -78,7 +78,7 @@ type approval struct {
 func TestA2AInputRequired(t *testing.T) {
 	// Server
 	inputRequestingAgent := newInputRequestingAgent(t, "agent-b")
-	executor := newAgentExecutor(inputRequestingAgent)
+	executor := newAgentExecutor(inputRequestingAgent, nil)
 	server := startA2AServer(executor)
 	defer server.Close()
 
@@ -191,14 +191,14 @@ func TestA2AInputRequired(t *testing.T) {
 func TestA2AMultiHopInputRequired(t *testing.T) {
 	// Server B
 	inputRequestingAgent := newInputRequestingAgent(t, "agent-b")
-	executorB := newAgentExecutor(inputRequestingAgent)
+	executorB := newAgentExecutor(inputRequestingAgent, nil)
 	serverB := startA2AServer(executorB)
 	defer serverB.Close()
 
 	// Server A
 	remoteAgent := newA2ARemoteAgent(t, "remote-"+inputRequestingAgent.Name(), serverB)
 	rootAgent := newRootAgent("root", remoteAgent)
-	executorA := newAgentExecutor(rootAgent)
+	executorA := newAgentExecutor(rootAgent, nil)
 	serverA := startA2AServer(executorA)
 	defer serverA.Close()
 
@@ -312,7 +312,7 @@ func TestA2AFinalResponse(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			executor := newAgentExecutor(tc.agentFn(t))
+			executor := newAgentExecutor(tc.agentFn(t), nil)
 			server := startA2AServer(executor)
 			defer server.Close()
 
@@ -355,7 +355,7 @@ func TestA2AFinalResponse(t *testing.T) {
 	}
 }
 
-func TestA2ARemoteAgentStreamingGemini(t *testing.T) {
+func TestA2ARemoteAgentStreamingGeminiSuccess(t *testing.T) {
 	// Server B with replayable LLMAgent
 	llmModel := newGeminiModel(t, "gemini-2.5-flash")
 	modelAgent := utils.Must(llmagent.New(llmagent.Config{
@@ -363,37 +363,97 @@ func TestA2ARemoteAgentStreamingGemini(t *testing.T) {
 		Model:       llmModel,
 		Instruction: "You are a helpful assistant.",
 	}))
-
-	executorB := newAgentExecutor(modelAgent)
+	executorB := newAgentExecutor(modelAgent, nil)
 	serverB := startA2AServer(executorB)
 	defer serverB.Close()
 
 	// Server A with RemoteAgent
 	remoteAgent := newA2ARemoteAgent(t, "remote-agent", serverB)
-	executorA := newAgentExecutor(remoteAgent)
+	serviceA := session.InMemoryService()
+	executorA := newAgentExecutor(remoteAgent, serviceA)
 	serverA := startA2AServer(executorA)
 	defer serverA.Close()
 
-	// Client
 	ctx := t.Context()
 	client := newA2AClient(t, serverA)
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "tell me about the capital of Poland"})
+	msg.ContextID = a2a.NewContextID()
+
+	// Make streaming request and aggregate results
 	var taskID a2a.TaskID
+	partialText, finalText := "", ""
 	for event, err := range client.SendStreamingMessage(t.Context(), &a2a.MessageSendParams{Message: msg}) {
 		if err != nil {
 			t.Fatalf("client.SendStreamingMessage() error = %v", err)
 		}
+		if tau, ok := event.(*a2a.TaskArtifactUpdateEvent); ok {
+			if adka2a.IsPartial(tau.Metadata) && tau.LastChunk {
+				if len(tau.Artifact.Parts) != 1 {
+					t.Fatalf("got %d parts in final partial artifact update, want 1", len(tau.Artifact.Parts))
+				}
+				if dp, ok := tau.Artifact.Parts[0].(a2a.DataPart); !ok || len(dp.Data) > 0 {
+					t.Fatalf("got %v part in final partial artifact update, want empty data part", tau.Artifact.Parts[0])
+				}
+				continue
+			}
+
+			if adka2a.IsPartial(tau.Metadata) {
+				for _, p := range tau.Artifact.Parts {
+					partialText += p.(a2a.TextPart).Text
+				}
+				continue
+			}
+
+			if len(finalText) > 0 {
+				t.Fatal("got multiple non-partial updates, want 1")
+			}
+			finalText = tau.Artifact.Parts[0].(a2a.TextPart).Text
+		}
 		taskID = event.TaskInfo().TaskID
 	}
+
+	// Check streaming contents
+	if len(finalText) == 0 {
+		t.Fatal("got empty final text")
+	}
+	if diff := cmp.Diff(partialText, finalText); diff != "" {
+		t.Fatalf("got final event text different from streaming (+got, -want), diff = %s", diff)
+	}
+
+	// Check A2A Task state
 	task, err := client.GetTask(ctx, &a2a.TaskQueryParams{ID: taskID})
 	if err != nil {
 		t.Fatalf("client.GetTask() error = %v", err)
 	}
-
 	if task.Status.State != a2a.TaskStateCompleted {
 		t.Fatalf("task state = %q, want %q", task.Status.State, a2a.TaskStateCompleted)
 	}
-	logJSON(t, task)
+
+	// Check Session Store state
+	fullSessionResp, err := serviceA.Get(ctx, &session.GetRequest{
+		AppName:   remoteAgent.Name(),
+		UserID:    "A2A_USER_" + msg.ContextID,
+		SessionID: msg.ContextID,
+	})
+	if err != nil {
+		t.Fatalf("serviceA.GetSession() error = %v", err)
+	}
+	events := fullSessionResp.Session.Events()
+	if events.Len() != 3 {
+		t.Fatalf("got event count = %d, want [user-msg, response, turn-complete]", events.Len())
+	}
+	if events.At(0).Author != "user" {
+		t.Fatalf("got first event author = %s, want user", events.At(0).Author)
+	}
+	if !events.At(2).TurnComplete || events.At(2).Content != nil {
+		t.Fatalf("got last event turn complete = true with no content, got turn complete = %v, content = %v", events.At(2).TurnComplete, events.At(2).Content)
+	}
+	if len(events.At(1).Content.Parts) != 1 {
+		t.Fatalf("got content event with %d parts, want 1", len(events.At(1).Content.Parts))
+	}
+	if diff := cmp.Diff(finalText, events.At(1).Content.Parts[0].Text); diff != "" {
+		t.Fatalf("got content event text different from A2A response (+got, -want), diff = %s", diff)
+	}
 }
 
 type llmStub struct {
@@ -469,13 +529,17 @@ func newRootAgent(name string, subAgent agent.Agent) agent.Agent {
 	}))
 }
 
-func newAgentExecutor(agent agent.Agent) a2asrv.AgentExecutor {
+func newAgentExecutor(agnt agent.Agent, service session.Service) a2asrv.AgentExecutor {
+	if service == nil {
+		service = session.InMemoryService()
+	}
 	return adka2a.NewExecutor(adka2a.ExecutorConfig{
 		RunnerConfig: runner.Config{
-			AppName:        agent.Name(),
-			SessionService: session.InMemoryService(),
-			Agent:          agent,
+			AppName:        agnt.Name(),
+			SessionService: service,
+			Agent:          agnt,
 		},
+		RunConfig: agent.RunConfig{StreamingMode: agent.StreamingModeSSE},
 	})
 }
 
@@ -564,8 +628,10 @@ func fromMap[T any](t *testing.T, m map[string]any) *T {
 
 func newA2AClient(t *testing.T, server *testA2AServer) *a2aclient.Client {
 	t.Helper()
-	result, err := a2aclient.NewFromEndpoints(t.Context(), []a2a.AgentInterface{
-		{URL: server.URL, Transport: a2a.TransportProtocolJSONRPC},
+
+	result, err := a2aclient.NewFromCard(t.Context(), &a2a.AgentCard{
+		PreferredTransport: a2a.TransportProtocolJSONRPC,
+		URL:                server.URL, Capabilities: a2a.AgentCapabilities{Streaming: true},
 	})
 	if err != nil {
 		t.Fatalf("a2aclient.NewFromEndpoints() error = %v", err)

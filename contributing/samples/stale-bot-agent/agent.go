@@ -321,7 +321,7 @@ func buildHistoryTimeline(data map[string]any) ([]TimelineEvent, []time.Time, *t
 					if lbl, ok := t["label"].(map[string]any); ok {
 						labelName, _ = lbl["name"].(string)
 					}
-					if labelName == STALE_LABEL_NAME {
+					if labelName == StaleLabelName {
 						labelEvents = append(labelEvents, timeVal)
 					}
 					continue
@@ -400,9 +400,13 @@ func replayHistoryToFindState(history []TimelineEvent, maintainers []string, iss
 }
 
 // Helper to check if actor is in maintainers list
-func isMaintainer(actor string, maintainers map[string]bool) bool {
-	_, ok := maintainers[actor]
-	return ok
+func isMaintainer(actor string, maintainers []string) bool {
+	for _, m := range maintainers {
+		if actor == m {
+			return true
+		}
+	}
+	return false
 }
 
 func formatDays(hours float64) string {
@@ -500,7 +504,7 @@ func addStaleLabelAndComment(ctx tool.Context, args IssueTargetArgs) (ToolResult
 		GitHubBaseURL, Owner, Repo, args.IssueNumber,
 	)
 
-	if _, err := PostRequest(labelURL, []string{STALE_LABEL_NAME}); err != nil {
+	if _, err := PostRequest(labelURL, []string{StaleLabelName}); err != nil {
 		return ToolResult{
 			Status:  "failure",
 			Message: fmt.Sprintf("error adding stale label: %v", err),
@@ -614,7 +618,7 @@ func getIssueState(ctx tool.Context, args IssueTargetArgs) (map[string]any, erro
 
 	isStale := false
 	for _, l := range labelsList {
-		if l == STALE_LABEL_NAME {
+		if l == StaleLabelName {
 			isStale = true
 			break
 		}

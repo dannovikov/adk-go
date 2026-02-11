@@ -300,7 +300,7 @@ func TestA2AMultiHopInputRequired(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// t.Parallel()
+			t.Parallel()
 
 			// Server B
 			inputRequestingAgent := newInputRequestingAgent(t, "agent-b", tc.tool)
@@ -806,7 +806,7 @@ func newInputRequestingAgent(t *testing.T, name string, requestApproval tool.Too
 					approvalResult := utils.FunctionResponses(lastMessage)
 					var content *genai.Content
 					switch {
-					case approvalResult == nil: // the first model invocation - invoke a long running tool
+					case len(approvalResult) == 0: // the first model invocation - invoke a long running tool
 						content = genai.NewContentFromParts([]*genai.Part{
 							genai.NewPartFromText(modelTextRequiresApproval),
 							genai.NewPartFromFunctionCall(approvalToolName, map[string]any{}),
@@ -966,9 +966,18 @@ func createLongRunningToolApproval(t *testing.T, pendingResponse *genai.Function
 
 func createToolConfirmationApproval(t *testing.T, toolCall *genai.FunctionCall) *genai.Part {
 	t.Helper()
-	tcMap := toolCall.Args["toolConfirmation"].(map[string]any)
-	payloadMap := tcMap["payload"].(map[string]any)
-	ticketID := payloadMap["ticket_id"].(string)
+	tcMap, ok := toolCall.Args["toolConfirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolCall = %v, want toolConfirmation", toolCall)
+	}
+	payloadMap, ok := tcMap["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolCall = %v, want payload", toolCall)
+	}
+	ticketID, ok := payloadMap["ticket_id"].(string)
+	if !ok {
+		t.Fatalf("toolCall = %v, want ticket_id", toolCall)
+	}
 	return &genai.Part{
 		FunctionResponse: &genai.FunctionResponse{
 			ID:   toolCall.ID,

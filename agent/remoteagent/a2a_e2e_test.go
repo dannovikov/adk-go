@@ -59,8 +59,6 @@ const (
 
 	transferToolName      = "transfer_to_agent"
 	modelTextRootTransfer = "transfering... please hold... beepboop..."
-
-	ticketStatusApproved = "approved"
 )
 
 type approvalStatus string

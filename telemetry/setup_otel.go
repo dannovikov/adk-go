@@ -18,10 +18,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"go.opentelemetry.io/contrib/detectors/gcp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"golang.org/x/oauth2"
@@ -29,15 +31,11 @@ import (
 )
 
 func configure(ctx context.Context, opts ...Option) (*config, error) {
-	cfg := &config{}
-
-	for _, opt := range opts {
-		if err := opt.apply(cfg); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %w", err)
-		}
+	cfg, err := configFromOpts(opts...)
+	if err != nil {
+		return nil, err
 	}
 
-	var err error
 	if cfg.oTelToCloud {
 		// Load ADC if no credentials are provided in the config.
 		if cfg.googleCredentials == nil {
@@ -72,16 +70,32 @@ func configure(ctx context.Context, opts ...Option) (*config, error) {
 	return cfg, nil
 }
 
+func configFromOpts(opts ...Option) (*config, error) {
+	cfg := &config{
+		genAICaptureMessageContent: strings.TrimSpace(os.Getenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT")) == "true",
+	}
+
+	for _, opt := range opts {
+		if err := opt.apply(cfg); err != nil {
+			return nil, fmt.Errorf("failed to apply option: %w", err)
+		}
+	}
+	return cfg, nil
+}
+
 func newInternal(cfg *config) (*Providers, error) {
 	tp, err := initTracerProvider(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize tracer provider: %w", err)
 	}
-	// TODO(#479) init logger provider
+
+	lp := initLoggerProvider(cfg)
 	// TODO(#479) init meter provider
 
 	return &Providers{
-		TracerProvider: tp,
+		TracerProvider:             tp,
+		genAICaptureMessageContent: cfg.genAICaptureMessageContent,
+		LoggerProvider:             lp,
 	}, nil
 }
 
@@ -104,6 +118,7 @@ func resolveGcpResourceProject(cfg *config) (string, error) {
 }
 
 func resolveProject(configuredProject string, creds *google.Credentials, requireProject bool, projectType string) (string, error) {
+	configuredProject = strings.TrimSpace(configuredProject)
 	if configuredProject != "" {
 		return configuredProject, nil
 	}
@@ -112,8 +127,8 @@ func resolveProject(configuredProject string, creds *google.Credentials, require
 	}
 	// The project was always empty during testing, even though it was set in ADC JSON file.
 	// Using fallback to env variable to resolve the project as a workaround.
-	project, ok := os.LookupEnv("GOOGLE_CLOUD_PROJECT")
-	if !ok && requireProject {
+	project := strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+	if requireProject && project == "" {
 		return "", fmt.Errorf("telemetry.googleapis.com requires setting the %s project. Refer to telemetry.config for the available options to set the %s project", projectType, projectType)
 	}
 	return project, nil
@@ -197,6 +212,22 @@ func initTracerProvider(cfg *config) (*sdktrace.TracerProvider, error) {
 	tp := sdktrace.NewTracerProvider(opts...)
 
 	return tp, nil
+}
+
+// TODO(#479) finish the implementation and add the default exporter if env vars are set.
+func initLoggerProvider(cfg *config) *sdklog.LoggerProvider {
+	if len(cfg.logProcessors) == 0 {
+		return nil
+	}
+	opts := []sdklog.LoggerProviderOption{
+		sdklog.WithResource(cfg.resource),
+	}
+	for _, p := range cfg.logProcessors {
+		opts = append(opts, sdklog.WithProcessor(p))
+	}
+	lp := sdklog.NewLoggerProvider(opts...)
+
+	return lp
 }
 
 func newGcpSpanExporter(ctx context.Context, cfg *config) (sdktrace.SpanExporter, error) {
